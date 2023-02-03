@@ -19,8 +19,7 @@ class Normalize(nn.Module):
         y = (x - mu) / (torch.sqrt(sg + 1e-6))
         return y
 
-
-#tensor container for the base model
+#initialization of the base (fast) parameters dict
 def create_base_model(n_layers=2, n_in=1024, n_out=100, n_hidden=128, d_hidden_state=256, cuda=True):
     dico = {}
 
@@ -53,12 +52,12 @@ def create_base_model(n_layers=2, n_in=1024, n_out=100, n_hidden=128, d_hidden_s
     return dico
 
 
-#NEM update rule model
+#NEM update rule module
 class NEMModel(nn.Module):
     def __init__(self, d_h=256, d_a=256):
         super().__init__()
 
-        self.gamma = 0.0001
+        self.gamma = 0.001
 
         self.inner = nn.GRUCell(d_h + d_a, d_h)
 
@@ -75,8 +74,8 @@ class NEMModel(nn.Module):
             )
 
         self.to_act = nn.Sequential(
+            nn.LayerNorm([d_a + d_h]),
             nn.Linear(d_a+d_h, d_a), 
-            nn.LayerNorm([d_a]),
             nn.LeakyReLU(),
             )
 
