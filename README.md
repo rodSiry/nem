@@ -1,6 +1,9 @@
 # nem
-Implementation of NEM, a meta-learned neuron model for deep continual learning
 
-My paper here : 
+Implementation of NEM (Neurons for Emergent Memorization)
+
+The NEM 
+
+# reference 
 
 https://arxiv.org/abs/2111.02557
