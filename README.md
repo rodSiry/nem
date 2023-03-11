@@ -9,6 +9,7 @@ NEM is a neuron model whom inference and update rules are meta-trained to achiev
 # use 
 
 Run `nem.py` to launch the genetic search
+
 Run `nem_test.py` to evaluate a trained update rule on various meta-test tasks (MNIST, SVHN...) and show learned filters
 
 # reference 
