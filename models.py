@@ -1,5 +1,3 @@
-#the NEM model, but re-implemented for genetic (or ES) optimization
-
 import torchvision
 import os
 from tqdm import tqdm
@@ -15,6 +13,7 @@ import time
 import math
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
+from utils import save_pickle, load_pickle
 
 def accuracy(y, Y):
     Y = Y.detach().cpu().numpy()
@@ -23,21 +22,24 @@ def accuracy(y, Y):
     acc = (y == Y).astype(int)
     return acc
 
-def iterate(d, bs=64, shuffle=True):
-    loader = DataLoader(d, batch_size=bs, shuffle=shuffle, num_workers=16)
-    while True:
-        for s in enumerate(loader):
-            yield s
+def gaussian_mutation(x):
+    n = torch.randn(x.shape).cuda()
+    return x + 0.01 * n
 
- 
-#class to instantiate each tiny function of the update rule
+def nonlocal_sparse(x):
+    n = (torch.rand(x.shape).cuda() - 0.5) * 2
+    d = torch.bernoulli(torch.ones(x.shape) * p).cuda()
+    x = (1 - d) * x + d * n 
+    x = torch.clip(x, -1, 1)
+    return x
 
-class MetaNNPop():
-    def __init__(self, n_pop, n_in, n_hidden, n_out):
+class MLPPopulation():
+    def __init__(self, n_pop, n_in, n_hidden, n_out, mutation_operator=gaussian_mutation):
         self.w1 = torch.randn(n_pop, n_in, n_hidden).cuda() / math.sqrt(n_in)
         self.w2 = torch.randn(n_pop, n_hidden, n_out).cuda() / math.sqrt(n_hidden)
         
         self.b1 = torch.zeros(n_pop, 1, n_hidden).cuda()
+        self.mutation_operator = mutation_operator
 
     def apply(self, x):
         y = torch.bmm(x, self.w1)
@@ -46,6 +48,9 @@ class MetaNNPop():
         y = torch.bmm(y, self.w2)
         return y
     
+    def mutation_operator(self, x):
+        return self.mutation_operator(x)
+   
     def evolve(self, indices, thr=100):
         n_pop = self.w1.shape[0]//2
         self.w1 = self.w1[indices]
@@ -56,14 +61,12 @@ class MetaNNPop():
         self.w2 = torch.cat([self.w2[:n_pop], self.w2[:n_pop]], 0)
         self.b1 = torch.cat([self.b1[:n_pop], self.b1[:n_pop]], 0)
 
-        self.w1[n_pop:] = self.w1[n_pop:] + 1e-2 * torch.randn(self.w1[n_pop:].shape).cuda()
-        self.w2[n_pop:] = self.w2[n_pop:] + 1e-2 * torch.randn(self.w2[n_pop:].shape).cuda()
-        self.b1[n_pop:] = self.b1[n_pop:] + 1e-2 * torch.randn(self.b1[n_pop:].shape).cuda()
+        self.w1[n_pop:] = self.mutation_operator(self.w1[n_pop:])
+        self.w2[n_pop:] = self.mutation_operator(self.w2[n_pop:])
+        self.b1[n_pop:] = self.mutation_operator(self.b1[n_pop:])
         
-#class to instantiate, evaluate and evolve a population of candidate update rules
-
 class Population():
-    def __init__(self, n_pop=100, n_base_layers=3, n_base_in=512, n_base_out=10, n_base_hidden=128, n_meta_state=5, n_meta_act=5, eps=1e-4, cuda=True):
+    def __init__(self, n_pop=100, n_base_layers=3, n_base_in=512, n_base_out=10, n_base_hidden=128, n_meta_state=5, n_meta_act=5, eps=1, cuda=True, mutation_operator=gaussian_mutation):
         self.n_pop = n_pop
 
         self.n_base_layers = n_base_layers
@@ -76,6 +79,7 @@ class Population():
 
         self.cuda = cuda
         self.eps = eps
+        self.mutation_operator = mutation_operator
 
     def init_base_param(self):
         self.base_param = {}
@@ -104,16 +108,15 @@ class Population():
 
     def init_meta_param(self, replace=True):
 
-        inner = MetaNNPop(self.n_pop, 2*self.n_meta_state + self.n_meta_act, 10, self.n_meta_state)
-        to_prev = MetaNNPop(self.n_pop, self.n_meta_state, 10, self.n_meta_state)
-        to_next = MetaNNPop(self.n_pop, self.n_meta_state, 10, self.n_meta_state)
-        to_act    = MetaNNPop(self.n_pop, self.n_meta_state + self.n_meta_act, 10, self.n_meta_act)
-        expand = MetaNNPop(self.n_pop, 1, 10, self.n_meta_act)
-        shrink = MetaNNPop(self.n_pop, self.n_meta_act, 10, 1)
+        inner = MLPPopulation(self.n_pop, 2*self.n_meta_state + self.n_meta_act, 10, self.n_meta_state, mutation_operator=self.mutation_operator)
+        to_prev = MLPPopulation(self.n_pop, self.n_meta_state, 10, self.n_meta_state, mutation_operator=self.mutation_operator)
+        to_next = MLPPopulation(self.n_pop, self.n_meta_state, 10, self.n_meta_state, mutation_operator=self.mutation_operator)
+        to_act    = MLPPopulation(self.n_pop, self.n_meta_state + self.n_meta_act, 10, self.n_meta_act, mutation_operator=self.mutation_operator)
+        expand = MLPPopulation(self.n_pop, 1, 10, self.n_meta_act, mutation_operator=self.mutation_operator)
+        shrink = MLPPopulation(self.n_pop, self.n_meta_act, 10, 1, mutation_operator=self.mutation_operator)
         self.meta = {'inner':inner, 'to_prev':to_prev, 'to_next':to_next, 'to_act':to_act, 'expand':expand, 'shrink':shrink}
 
     def evolve(self, criterion, threshold=5):
-        #indices = torch.argsort(criterion)#torch.from_numpy(criterion))
         indices = torch.argsort(torch.from_numpy(criterion))
         indices = torch.flip(indices, (0, ))
         for k in self.meta:
@@ -124,11 +127,6 @@ class Population():
         std  = x.std(1, keepdim=True).expand(x.shape)
         return (x - mean) / (std + 1e-10)
 
-    def normalize_last(self, x):
-        mean = x.mean(-1).unsqueeze(-1)
-        std  = x.std(-1).unsqueeze(-1)
-        return (x - mean) / (std + 1e-10)
-        
     def inference(self, x, Y):
 
         #forward pass
@@ -193,45 +191,10 @@ class Population():
             cur_forward_msg  = forward_msgs[i]
             cur_backward_msg = backward_msgs[self.n_base_layers - i - 1]
             fwd = self.meta['to_prev'].apply(cur_forward_msg)
+            fwd = fwd / torch.sqrt(fwd.pow(2).sum(-1).unsqueeze(-1) + 1e-10)
             bwd = self.meta['to_next'].apply(cur_backward_msg)
+            bwd = bwd / torch.sqrt(bwd.pow(2).sum(-1).unsqueeze(-1) + 1e-10)
             dwi = torch.bmm(fwd, bwd.permute(0, 2, 1))
-            self.base_param['w'][i] = wi + self.eps * dwi
-
-#
-
-def train_nem(data_path = '/home/rodrigue/data', n_pop = 1000, n_rep = 10, seq_len = 100, n_classes = 100, input_dim = 1024, n_iters = 1000000000000):
-
-#t = torchvision.transforms.ToTensor()
-#data = torchvision.datasets.MNIST('/home/rodrigue/data', transform=t, download=True)
-
-t = transforms.Compose([transforms.Resize(32), transforms.Grayscale(1), transforms.ToTensor()])
-data = torchvision.datasets.CIFAR100(root=data_path, train=True, download=True, transform=t)
-data = iterate(data, bs=seq_len)
+            self.base_param['w'][i] = torch.clip(wi + self.eps * dwi, -3, 3)
 
 
-with torch.no_grad():
-    pop = Population(n_pop=n_pop, n_base_in=input_dim, n_base_out=n_classes)
-    pop.init_meta_param()
-
-    for _ in range(n_iters):
-        total_acc = 0
-        total_loss = 0
-        for k in range(n_rep):
-            #sample sequence
-            pop.init_base_param()
-            _, (x, y) = next(data)
-            x, y = x.cuda(), y.long().cuda()
-            x = x.view(seq_len, -1)
-
-            for i in range(seq_len):
-                x_train, y_train = x[i].unsqueeze(0).expand(n_pop, -1), y[i].unsqueeze(0).expand(n_pop)
-                j = random.randint(0, i)
-                x_test, y_test = x[j].unsqueeze(0).expand(n_pop, -1), y[j].unsqueeze(0).expand(n_pop)
-                pop.update(x_train, y_train)
-                losses, acc = pop.inference(x_test, y_test)
-                total_acc += acc
-                total_loss += losses
-        pop.evolve(total_acc)
-        #pop.sort_meta_param(total_loss)
-        print(total_acc.mean() / n_rep/seq_len)
-        #print(total_acc.mean() / n_rep / seq_len)
