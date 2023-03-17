@@ -1,5 +1,5 @@
 <h1>
-  <a href="#"><img alt="banner" src="nem.gif" width="10%"/></a>
+  <a href="#"><img alt="banner" src="nem.gif" width="20%"/></a>
 </h1>
 *1st layer filters learnt continually by the NEM update rule on class-incremental MNIST sequence*
 
