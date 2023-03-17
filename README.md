@@ -1,3 +1,8 @@
+<h1>
+  <a href="#"><img alt="banner" src="nem.gif" width="30%"/></a>
+</h1>
+*1st layer filters learnt continually by the NEM update rule on class-incremental MNIST sequence*
+
 # nem
 
 Implementation of NEM (Neurons for Emergent Memorization)
