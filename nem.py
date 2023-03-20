@@ -15,12 +15,11 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader, Dataset
 from utils import save_pickle, load_pickle
 from models import Population
-from loaders import provide_datasets
+from loaders import SequenceGenerator
 
-def train_nem(dataset_name='cifar10', exp_name='nem_ret', data_path='/home/rodrigue/data', n_pop=1000, n_rep=1, seq_len=[1000, 5000], n_classes=10, input_dim=1024, n_iters=1000000000000):
+def train_nem(dataset_name='cifar10', exp_name='nem_small', data_path='/home/rodrigue/data', n_pop=1000, n_rep=1, seq_len=[10000], n_classes=10, input_dim=256, n_iters=1000000000000):
     
     curriculum_index=0
-    train_data, test_data = provide_datasets(dataset_name, seq_len[curriculum_index], data_path=data_path)
 
     n=0
 
@@ -30,9 +29,13 @@ def train_nem(dataset_name='cifar10', exp_name='nem_ret', data_path='/home/rodri
     logs['mean'] = []
     logs['best'] = []
     
-    pop = Population(n_pop=n_pop, n_base_in=input_dim, n_base_out=n_classes)
+    pop = Population(n_pop=n_pop, n_base_in=1024, n_base_out=n_classes)
     pop.init_meta_param()
+    pop = load_pickle('results/snapshot/nem_small/2000.pk')
+    pop.n_base_in = input_dim
     
+    data = SequenceGenerator()
+
     while True:
         
         with torch.no_grad():
@@ -43,15 +46,12 @@ def train_nem(dataset_name='cifar10', exp_name='nem_ret', data_path='/home/rodri
             for k in range(n_rep):
                 pop.init_base_param()
 
-                #sample train sequence
-                _, (Xtr, Ytr) = next(train_data)
-                Xtr, Ytr = Xtr.cuda(), Ytr.long().cuda()
-                Xtr = Xtr.view(seq_len[curriculum_index], -1)
+                Xtr, Ytr = data.gen_sequence(seq_len[curriculum_index], ['cifar10', 'mnist', 'svhn'], correlation='ci', fold='train')
+                Xtr, Ytr = Xtr.view(Xtr.shape[0], -1).cuda(), Ytr.cuda()
+                Xts, Yts = data.gen_sequence(seq_len[curriculum_index], ['cifar10', 'mnist', 'svhn'], correlation='ci', fold='test')
+                Xts, Yts = Xts.view(Xtr.shape[0], -1).cuda(), Yts.cuda()
 
-                #sample test data
-                _, (Xts, Yts) = next(test_data)
-                Xts, Yts = Xts.cuda(), Yts.long().cuda()
-                Xts = Xts.view(seq_len[curriculum_index], -1)
+
 
                 for i in range(seq_len[curriculum_index]):
                     x_train, y_train = Xtr[i].unsqueeze(0).expand(n_pop, -1), Ytr[i].unsqueeze(0).expand(n_pop)

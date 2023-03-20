@@ -114,9 +114,10 @@ class Population():
         to_act    = MLPPopulation(self.n_pop, self.n_meta_state + self.n_meta_act, 10, self.n_meta_act, mutation_operator=self.mutation_operator)
         expand = MLPPopulation(self.n_pop, 1, 10, self.n_meta_act, mutation_operator=self.mutation_operator)
         shrink = MLPPopulation(self.n_pop, self.n_meta_act, 10, 1, mutation_operator=self.mutation_operator)
-        self.meta = {'inner':inner, 'to_prev':to_prev, 'to_next':to_next, 'to_act':to_act, 'expand':expand, 'shrink':shrink}
+        first_hidden = MLPPopulation(self.n_pop, 1, 10, self.n_meta_state, mutation_operator=self.mutation_operator)
+        self.meta = {'inner':inner, 'to_prev':to_prev, 'to_next':to_next, 'to_act':to_act, 'expand':expand, 'shrink':shrink, 'first_hidden':first_hidden}
 
-    def evolve(self, criterion, threshold=5):
+    def evolve(self, criterion):
         indices = torch.argsort(torch.from_numpy(criterion))
         indices = torch.flip(indices, (0, ))
         for k in self.meta:
@@ -151,13 +152,32 @@ class Population():
         acc = accuracy(y, Y)
         
         return losses, acc
+ 
+    def get_best_filters(self, criterion):
+        indices = torch.argsort(torch.from_numpy(criterion))
+        indices = torch.flip(indices, (0, ))
+        bf = self.base_param['w'][0][indices[0]]
+        #bf = self.base_param['w'][0][0]
+        bf = bf.permute(1, 0)
+        return bf
+ 
+    def get_best_hidden(self, criterion):
+        indices = torch.argsort(torch.from_numpy(criterion))
+        indices = torch.flip(indices, (0, ))
+        bf = self.base_param['h'][1][indices[0]]
+        return bf
+
+
+
 
     def update(self, x, Y):
 
         #forward pass
 
         y = x.unsqueeze(-1)
+        first_hidden = self.meta['first_hidden'].apply(y)
         y = self.meta['expand'].apply(y)
+
 
         forward_msgs = [y]
 
@@ -169,12 +189,9 @@ class Population():
             y = torch.cat([y, hi], -1)
             y = self.meta['to_act'].apply(y)
     
-        #backward pass & state update
-
         cur_backward_msg = F.one_hot(Y, self.n_base_out).float()
         cur_backward_msg = cur_backward_msg.unsqueeze(-1).expand(-1, -1, self.n_meta_state)
 
-        backward_msgs = [cur_backward_msg]
 
         for i in range(self.n_base_layers):
             j = self.n_base_layers - i - 1
@@ -183,18 +200,19 @@ class Population():
             self.base_param['h'][j] = torch.clip(self.meta['inner'].apply(update_input), -1, 1)
             cur_backward_msg = torch.bmm(self.base_param['w'][j], cur_backward_msg)
             cur_backward_msg = self.normalize(cur_backward_msg)
-            backward_msgs.append(cur_backward_msg)
 
         #base weight matrix update
 
+        hidden_states = [first_hidden] + self.base_param['h']
+
         for i, wi in enumerate(self.base_param['w']):
-            cur_forward_msg  = forward_msgs[i]
-            cur_backward_msg = backward_msgs[self.n_base_layers - i - 1]
-            fwd = self.meta['to_prev'].apply(cur_forward_msg)
-            fwd = fwd / torch.sqrt(fwd.pow(2).sum(-1).unsqueeze(-1) + 1e-10)
-            bwd = self.meta['to_next'].apply(cur_backward_msg)
-            bwd = bwd / torch.sqrt(bwd.pow(2).sum(-1).unsqueeze(-1) + 1e-10)
-            dwi = torch.bmm(fwd, bwd.permute(0, 2, 1))
+            prev_state  = hidden_states[i]
+            next_state = hidden_states[i+1]
+            prv = self.meta['to_prev'].apply(prev_state)
+            prv = prv / torch.sqrt(prv.pow(2).sum(-1).unsqueeze(-1) + 1e-10)
+            nxt = self.meta['to_next'].apply(next_state)
+            nxt = nxt / torch.sqrt(nxt.pow(2).sum(-1).unsqueeze(-1) + 1e-10)
+            dwi = torch.bmm(prv, nxt.permute(0, 2, 1))
             self.base_param['w'][i] = torch.clip(wi + self.eps * dwi, -3, 3)
 
 
